@@ -194,6 +194,12 @@ function getAppRedirectUrl() {
   return new URL(import.meta.env.BASE_URL, window.location.origin).toString()
 }
 
+function getResponsiveCalendarView(): CalendarView {
+  if (window.matchMedia('(max-width: 760px)').matches) return 'timeGridDay'
+  if (window.matchMedia('(max-width: 1024px)').matches) return 'timeGridThreeDay'
+  return 'timeGridWeek'
+}
+
 function App() {
   const [locale, setLocale] = useState<Locale>(() => localStorage.getItem('dayflow.locale') === 'en' ? 'en' : 'ru')
   const [tasks, setTasks] = useState<Task[]>(() => loadStored(scopedStorageKey(taskStorageKey, null), () => []))
@@ -202,7 +208,7 @@ function App() {
   const [projectColors, setProjectColors] = useState<Record<string, string>>(() => loadStored(scopedStorageKey('dayflow.projectColors.v1', null), () => ({ Personal: projectColor.Personal })))
   const [page, setPage] = useState<Page>('calendar')
   const [theme, setTheme] = useState<'dark' | 'light'>(() => localStorage.getItem('dayflow.theme') === 'light' ? 'light' : 'dark')
-  const [calendarView, setCalendarView] = useState<CalendarView>('timeGridWeek')
+  const [calendarView, setCalendarView] = useState<CalendarView>(getResponsiveCalendarView)
   const [editingTask, setEditingTask] = useState<Task | null>(null)
   const [taskModalOpen, setTaskModalOpen] = useState(false)
   const [taskColor, setTaskColor] = useState(taskColorPalette[0])
@@ -235,6 +241,24 @@ function App() {
   const pinchGestures = useRef(new Map<string, { distance: number; duration: number }>())
   const workspaceOwnerRef = useRef<string | null>(null)
   const t = copy[locale]
+
+  useEffect(() => {
+    const mobileViewport = window.matchMedia('(max-width: 760px)')
+    const compactViewport = window.matchMedia('(max-width: 1024px)')
+    const updateCalendarView = () => {
+      const nextView = getResponsiveCalendarView()
+      setCalendarView((current) => current === nextView ? current : nextView)
+      const calendarApi = calendarRef.current?.getApi()
+      if (calendarApi && calendarApi.view.type !== nextView) calendarApi.changeView(nextView)
+    }
+
+    mobileViewport.addEventListener('change', updateCalendarView)
+    compactViewport.addEventListener('change', updateCalendarView)
+    return () => {
+      mobileViewport.removeEventListener('change', updateCalendarView)
+      compactViewport.removeEventListener('change', updateCalendarView)
+    }
+  }, [])
 
   useEffect(() => {
     if (!workspaceReady) return
@@ -582,8 +606,9 @@ function App() {
     setMenuOpen(false)
     setSortOpen(false)
     if (nextPage === 'calendar') {
-      setCalendarView('timeGridWeek')
-      calendarRef.current?.getApi().changeView('timeGridWeek')
+      const nextView = getResponsiveCalendarView()
+      setCalendarView(nextView)
+      calendarRef.current?.getApi().changeView(nextView)
     }
   }
 
@@ -711,7 +736,7 @@ function App() {
               <FullCalendar
                 ref={calendarRef}
                 plugins={[dayGridPlugin, timeGridPlugin, interactionPlugin]}
-                initialView="timeGridWeek"
+                initialView={calendarView}
                 locale={locale === 'ru' ? 'ru' : 'en'}
                 firstDay={1}
                 headerToolbar={false}
