@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import type { FormEvent } from 'react'
+import type { CSSProperties, FormEvent } from 'react'
 import FullCalendar from '@fullcalendar/react'
 import dayGridPlugin from '@fullcalendar/daygrid'
 import timeGridPlugin from '@fullcalendar/timegrid'
@@ -10,7 +10,7 @@ import {
   ChartPie, Check, CheckCheck, ChevronDown, ChevronLeft, ChevronRight, Circle,
   Cloud, Flame, Globe2, Inbox, Layers2, LogIn, Menu, MoreHorizontal,
   Moon, Plus, Search, Settings2, Sparkles, Sun, Target, Timer, Trash2, UserRound,
-  X, Zap,
+  X, Zap, ZoomIn, ZoomOut,
 } from 'lucide-react'
 import type { Session } from '@supabase/supabase-js'
 import { supabase } from './lib/supabase'
@@ -131,6 +131,7 @@ const copy = {
     taskLabel: 'Задача', listTitle: 'Мои задачи',
     sortBy: 'Сортировать', sortPriority: 'По приоритету', sortDate: 'По дате', sortTitle: 'По названию',
     closeMenu: 'Закрыть меню', openMenu: 'Открыть меню', activity: 'дней серии', thisWeek: 'Активность за неделю',
+    zoomIn: 'Увеличить календарь', zoomOut: 'Уменьшить календарь',
   },
   en: {
     inbox: 'Inbox', today: 'Today', calendar: 'Calendar', habits: 'Habits',
@@ -158,6 +159,7 @@ const copy = {
     calendarHelp: 'Long-press a task to move it. Drag an edge to change its duration.', taskLabel: 'Task',
     listTitle: 'My tasks', sortBy: 'Sort by', sortPriority: 'By priority', sortDate: 'By date', sortTitle: 'By name',
     closeMenu: 'Close menu', openMenu: 'Open menu', activity: 'day streak', thisWeek: 'This week',
+    zoomIn: 'Zoom in on calendar', zoomOut: 'Zoom out on calendar',
   },
 }
 
@@ -209,6 +211,9 @@ function App() {
   const [page, setPage] = useState<Page>('calendar')
   const [theme, setTheme] = useState<'dark' | 'light'>(() => localStorage.getItem('dayflow.theme') === 'light' ? 'light' : 'dark')
   const [calendarView, setCalendarView] = useState<CalendarView>(getResponsiveCalendarView)
+  const responsiveCalendarViewRef = useRef(calendarView)
+  const [constrainedCalendarHeight, setConstrainedCalendarHeight] = useState(() => window.matchMedia('(max-width: 760px), (max-height: 500px)').matches)
+  const [calendarZoom, setCalendarZoom] = useState(1)
   const [editingTask, setEditingTask] = useState<Task | null>(null)
   const [taskModalOpen, setTaskModalOpen] = useState(false)
   const [taskColor, setTaskColor] = useState(taskColorPalette[0])
@@ -236,27 +241,63 @@ function App() {
   const [workspaceReady, setWorkspaceReady] = useState(!supabase)
   const [calendarTitle, setCalendarTitle] = useState('')
   const calendarRef = useRef<InstanceType<typeof FullCalendar> | null>(null)
+  const calendarFrameRef = useRef<HTMLDivElement | null>(null)
+  const calendarZoomRef = useRef(calendarZoom)
   const searchInputRef = useRef<HTMLInputElement | null>(null)
-  const touchListeners = useRef(new WeakMap<HTMLElement, EventListener>())
-  const pinchGestures = useRef(new Map<string, { distance: number; duration: number }>())
   const workspaceOwnerRef = useRef<string | null>(null)
   const t = copy[locale]
 
   useEffect(() => {
-    const mobileViewport = window.matchMedia('(max-width: 760px)')
-    const compactViewport = window.matchMedia('(max-width: 1024px)')
+    calendarZoomRef.current = calendarZoom
+  }, [calendarZoom])
+
+  useEffect(() => {
+    const calendarFrame = calendarFrameRef.current
+    if (!calendarFrame) return
+
+    let gesture: { distance: number; zoom: number } | null = null
+    const getTouchDistance = (touches: TouchList) => Math.hypot(
+      touches[0].clientX - touches[1].clientX,
+      touches[0].clientY - touches[1].clientY,
+    )
+    const handlePinchStart = (event: TouchEvent) => {
+      if (event.touches.length !== 2) return
+      gesture = { distance: getTouchDistance(event.touches), zoom: calendarZoomRef.current }
+    }
+    const handlePinchMove = (event: TouchEvent) => {
+      if (event.touches.length !== 2 || !gesture || gesture.distance === 0) return
+      event.preventDefault()
+      const nextZoom = Math.min(1.6, Math.max(0.7, gesture.zoom * getTouchDistance(event.touches) / gesture.distance))
+      setCalendarZoom((current) => Math.abs(current - nextZoom) < 0.02 ? current : nextZoom)
+    }
+    const clearGesture = () => { gesture = null }
+
+    calendarFrame.addEventListener('touchstart', handlePinchStart, { passive: true })
+    calendarFrame.addEventListener('touchmove', handlePinchMove, { passive: false })
+    calendarFrame.addEventListener('touchend', clearGesture, { passive: true })
+    calendarFrame.addEventListener('touchcancel', clearGesture, { passive: true })
+    return () => {
+      calendarFrame.removeEventListener('touchstart', handlePinchStart)
+      calendarFrame.removeEventListener('touchmove', handlePinchMove)
+      calendarFrame.removeEventListener('touchend', clearGesture)
+      calendarFrame.removeEventListener('touchcancel', clearGesture)
+    }
+  }, [page])
+
+  useEffect(() => {
     const updateCalendarView = () => {
+      setConstrainedCalendarHeight(window.matchMedia('(max-width: 760px), (max-height: 500px)').matches)
       const nextView = getResponsiveCalendarView()
-      setCalendarView((current) => current === nextView ? current : nextView)
+      if (responsiveCalendarViewRef.current === nextView) return
+      responsiveCalendarViewRef.current = nextView
+      setCalendarView(nextView)
       const calendarApi = calendarRef.current?.getApi()
       if (calendarApi && calendarApi.view.type !== nextView) calendarApi.changeView(nextView)
     }
 
-    mobileViewport.addEventListener('change', updateCalendarView)
-    compactViewport.addEventListener('change', updateCalendarView)
+    window.addEventListener('resize', updateCalendarView)
     return () => {
-      mobileViewport.removeEventListener('change', updateCalendarView)
-      compactViewport.removeEventListener('change', updateCalendarView)
+      window.removeEventListener('resize', updateCalendarView)
     }
   }, [])
 
@@ -607,6 +648,7 @@ function App() {
     setSortOpen(false)
     if (nextPage === 'calendar') {
       const nextView = getResponsiveCalendarView()
+      responsiveCalendarViewRef.current = nextView
       setCalendarView(nextView)
       calendarRef.current?.getApi().changeView(nextView)
     }
@@ -616,6 +658,10 @@ function App() {
     setCalendarView(view)
     setMobileViewOpen(false)
     calendarRef.current?.getApi().changeView(view)
+  }
+
+  function adjustCalendarZoom(amount: number) {
+    setCalendarZoom((current) => Math.min(1.6, Math.max(0.7, Math.round((current + amount) * 100) / 100)))
   }
 
   function toggleHabit(id: string) {
@@ -730,9 +776,9 @@ function App() {
             </div>
             <div className="calendar-toolbar">
               <div className="calendar-date"><button className="icon-button tiny" onClick={() => calendarRef.current?.getApi().prev()} title={locale === 'ru' ? 'Предыдущий период' : 'Previous period'}><ChevronLeft size={17} /></button><button className="date-title" onClick={() => calendarRef.current?.getApi().today()}>{calendarTitle}</button><button className="icon-button tiny" onClick={() => calendarRef.current?.getApi().next()} title={locale === 'ru' ? 'Следующий период' : 'Next period'}><ChevronRight size={17} /></button><button className="today-button" onClick={() => calendarRef.current?.getApi().today()}>{t.todayButton}</button></div>
-              <div className="calendar-tools"><span className="calendar-hint"><span className="hint-dot" />{t.calendarHelp}</span><div className="segmented-control desktop-calendar-views">{calendarViews.map((view) => <button key={view.id} className={calendarView === view.id ? 'selected' : ''} onClick={() => changeCalendarView(view.id)}>{view.label}</button>)}</div><div className="mobile-calendar-actions"><button className="icon-button mobile-view-trigger" aria-label={locale === 'ru' ? 'Выбрать вид календаря' : 'Choose calendar view'} aria-expanded={mobileViewOpen} onClick={() => setMobileViewOpen((open) => !open)}><MoreHorizontal size={19} /></button>{mobileViewOpen && <div className="calendar-view-menu">{calendarViews.map((view) => <button key={view.id} className={calendarView === view.id ? 'selected' : ''} onClick={() => changeCalendarView(view.id)}>{view.label}</button>)}</div>}<button className="icon-button mobile-add-task" aria-label={t.create} onClick={openNewTask}><Plus size={20} /></button></div></div>
+              <div className="calendar-tools"><span className="calendar-hint"><span className="hint-dot" />{t.calendarHelp}</span><div className="calendar-zoom-controls"><button className="icon-button" aria-label={t.zoomOut} title={t.zoomOut} disabled={calendarZoom <= 0.7} onClick={() => adjustCalendarZoom(-0.1)}><ZoomOut size={17} /></button><output aria-live="polite">{Math.round(calendarZoom * 100)}%</output><button className="icon-button" aria-label={t.zoomIn} title={t.zoomIn} disabled={calendarZoom >= 1.6} onClick={() => adjustCalendarZoom(0.1)}><ZoomIn size={17} /></button></div><div className="segmented-control desktop-calendar-views">{calendarViews.map((view) => <button key={view.id} className={calendarView === view.id ? 'selected' : ''} onClick={() => changeCalendarView(view.id)}>{view.label}</button>)}</div><div className="mobile-calendar-actions"><button className="icon-button mobile-view-trigger" aria-label={locale === 'ru' ? 'Выбрать вид календаря' : 'Choose calendar view'} aria-expanded={mobileViewOpen} onClick={() => setMobileViewOpen((open) => !open)}><MoreHorizontal size={19} /></button>{mobileViewOpen && <div className="calendar-view-menu">{calendarViews.map((view) => <button key={view.id} className={calendarView === view.id ? 'selected' : ''} onClick={() => changeCalendarView(view.id)}>{view.label}</button>)}</div>}<button className="icon-button mobile-add-task" aria-label={t.create} onClick={openNewTask}><Plus size={20} /></button></div></div>
             </div>
-            <div className="calendar-frame">
+            <div className="calendar-frame" ref={calendarFrameRef} style={{ '--calendar-zoom': calendarZoom } as CSSProperties}>
               <FullCalendar
                 ref={calendarRef}
                 plugins={[dayGridPlugin, timeGridPlugin, interactionPlugin]}
@@ -740,7 +786,7 @@ function App() {
                 locale={locale === 'ru' ? 'ru' : 'en'}
                 firstDay={1}
                 headerToolbar={false}
-                height="auto"
+                height={constrainedCalendarHeight ? '100%' : 'auto'}
                 allDaySlot={false}
                 slotMinTime="00:00:00"
                 slotMaxTime="24:00:00"
@@ -764,37 +810,6 @@ function App() {
                 eventClick={(info) => {
                   const task = tasks.find((item) => item.id === info.event.id)
                   if (task) openEditTask(task)
-                }}
-                eventDidMount={(info) => {
-                  const handleTouch = (event: TouchEvent) => {
-                    if (event.type === 'touchend') {
-                      if (event.touches.length < 2) pinchGestures.current.delete(info.event.id)
-                      return
-                    }
-                    if (event.touches.length !== 2) return
-                    event.preventDefault()
-                    const distance = Math.abs(event.touches[0].clientY - event.touches[1].clientY)
-                    if (event.type === 'touchstart') {
-                      pinchGestures.current.set(info.event.id, { distance, duration: Number(info.event.extendedProps.duration ?? 30) })
-                      return
-                    }
-                    const gesture = pinchGestures.current.get(info.event.id)
-                    if (!gesture || !info.event.start) return
-                    const nextDuration = Math.max(15, Math.round((gesture.duration + (distance - gesture.distance) * 1.5) / 15) * 15)
-                    updateTaskFromCalendar(info.event.id, info.event.start, new Date(info.event.start.getTime() + nextDuration * 60000))
-                  }
-                  info.el.addEventListener('touchstart', handleTouch, { passive: false })
-                  info.el.addEventListener('touchmove', handleTouch, { passive: false })
-                  info.el.addEventListener('touchend', handleTouch, { passive: false })
-                  touchListeners.current.set(info.el, handleTouch as EventListener)
-                }}
-                eventWillUnmount={(info) => {
-                  const listener = touchListeners.current.get(info.el)
-                  if (!listener) return
-                  info.el.removeEventListener('touchstart', listener)
-                  info.el.removeEventListener('touchmove', listener)
-                  info.el.removeEventListener('touchend', listener)
-                  touchListeners.current.delete(info.el)
                 }}
                 dateClick={(info) => {
                   setEditingTask({ id: '', title: '', start: info.allDay ? `${info.dateStr.slice(0, 10)}T09:00:00` : info.dateStr.slice(0, 19), duration: 30, priority: 'medium', project: 'Personal', completed: false, note: '' })
